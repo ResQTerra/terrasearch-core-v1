@@ -258,4 +258,13 @@ class DataManager(private val context: Context) {
         _channelMembers.clear()
         prefs.edit().clear().apply()
     }
+
+    fun getLidarDataInputStream(): java.io.InputStream? {
+        return try {
+            context.assets.open("lidar_data.csv")
+        } catch (e: java.io.IOException) {
+            Log.e(TAG, "Error opening lidar_data.csv from assets", e)
+            null
+        }
+    }
 }

@@ -16,7 +16,12 @@ enum class MessageType(val value: UByte) {
     NOISE_HANDSHAKE(0x10u),  // Noise handshake
     NOISE_ENCRYPTED(0x11u),  // Noise encrypted transport message
     FRAGMENT(0x20u), // Fragmentation for large packets
-    REQUEST_SYNC(0x21u); // GCS-based sync request
+    REQUEST_SYNC(0x21u), // GCS-based sync request
+
+    // LIDAR
+    LIDAR_FRAGMENT_START(0x30u),
+    LIDAR_FRAGMENT_CONTINUE(0x31u),
+    LIDAR_FRAGMENT_END(0x32u);
 
     companion object {
         fun fromValue(value: UByte): MessageType? {
@@ -109,7 +114,7 @@ data class BitchatPacket(
         /**
          * Convert hex string peer ID to binary data (8 bytes) - exactly same as iOS
          */
-        private fun hexStringToByteArray(hexString: String): ByteArray {
+        fun hexStringToByteArray(hexString: String): ByteArray {
             val result = ByteArray(8) { 0 } // Initialize with zeros, exactly 8 bytes
             var tempID = hexString
             var index = 0

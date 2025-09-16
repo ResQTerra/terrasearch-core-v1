@@ -10,12 +10,16 @@ import com.bitchat.android.mesh.BluetoothMeshDelegate
 import com.bitchat.android.mesh.BluetoothMeshService
 import com.bitchat.android.model.BitchatMessage
 import com.bitchat.android.protocol.BitchatPacket
-
-
+import com.bitchat.android.protocol.SpecialRecipients
+import java.nio.ByteBuffer
+import com.bitchat.android.model.LidarFragmentStart
+import com.bitchat.android.model.LidarFragmentContinue
+import com.bitchat.android.model.LidarFragmentEnd
+import com.bitchat.android.lidar.LidarDataParser
+import com.bitchat.android.lidar.LidarDataFragmenter
 import kotlinx.coroutines.launch
 import com.bitchat.android.util.NotificationIntervalManager
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.util.Date
 import kotlin.random.Random
 
@@ -479,7 +483,7 @@ class ChatViewModel(
     }
     
     fun toggleFavorite(peerID: String) {
-        Log.d("ChatViewModel", "toggleFavorite called for peerID: $peerID")
+        Log.d(TAG, "toggleFavorite called for peerID: $peerID")
         privateChatManager.toggleFavorite(peerID)
 
         // Persist relationship in FavoritesPersistenceService
@@ -543,11 +547,11 @@ class ChatViewModel(
     }
     
     private fun logCurrentFavoriteState() {
-        Log.i("ChatViewModel", "=== CURRENT FAVORITE STATE ===")
-        Log.i("ChatViewModel", "LiveData favorite peers: ${favoritePeers.value}")
-        Log.i("ChatViewModel", "DataManager favorite peers: ${dataManager.favoritePeers}")
-        Log.i("ChatViewModel", "Peer fingerprints: ${privateChatManager.getAllPeerFingerprints()}")
-        Log.i("ChatViewModel", "==============================")
+        Log.i(TAG, "=== CURRENT FAVORITE STATE ===")
+        Log.i(TAG, "LiveData favorite peers: ${favoritePeers.value}")
+        Log.i(TAG, "DataManager favorite peers: ${dataManager.favoritePeers}")
+        Log.i(TAG, "Peer fingerprints: ${privateChatManager.getAllPeerFingerprints()}")
+        Log.i(TAG, "===============================")
     }
     
     /**
@@ -695,6 +699,10 @@ class ChatViewModel(
     
     override fun isFavorite(peerID: String): Boolean {
         return meshDelegateHandler.isFavorite(peerID)
+    }
+
+    override fun onLidarScanReceived(scan: com.bitchat.android.model.LidarScan) {
+        Log.d(TAG, "LIDAR scan reassembled: ${scan.timestampSeconds}")
     }
     
     // registerPeerPublicKey REMOVED - fingerprints now handled centrally in PeerManager
@@ -909,5 +917,75 @@ class ChatViewModel(
      */
     fun colorForNostrPubkey(pubkeyHex: String, isDark: Boolean): androidx.compose.ui.graphics.Color {
         return geohashViewModel.colorForNostrPubkey(pubkeyHex, isDark)
+    }
+
+    fun sendLidarData() {
+        viewModelScope.launch {
+            val inputStream = dataManager.getLidarDataInputStream()
+            if (inputStream == null) {
+                Log.e(TAG, "LIDAR data file not found")
+                return@launch
+            }
+
+            val scans = LidarDataParser().parse(inputStream)
+            val fragmenter = LidarDataFragmenter()
+
+            for (scan in scans) {
+                val packets = fragmenter.fragment(scan)
+                for (lidarPacket in packets) {
+                    val bitchatPacket = when (lidarPacket) {
+                        is LidarFragmentStart -> {
+                            val payload = ByteBuffer.allocate(8 + 4 + 4)
+                                .putLong(lidarPacket.scanTimestampSec)
+                                .putInt(lidarPacket.scanTimestampNanos)
+                                .putInt(lidarPacket.totalFragments)
+                                .array()
+                            BitchatPacket(
+                                type = com.bitchat.android.protocol.MessageType.LIDAR_FRAGMENT_START.value,
+                                senderID = BitchatPacket.hexStringToByteArray(meshService.myPeerID),
+                                recipientID = SpecialRecipients.BROADCAST,
+                                timestamp = System.currentTimeMillis().toULong(),
+                                payload = payload,
+                                ttl = 7u
+                            )
+                        }
+                        is LidarFragmentContinue -> {
+                            val payload = ByteBuffer.allocate(8 + 4 + 4 + lidarPacket.data.size)
+                                .putLong(lidarPacket.scanTimestampSec)
+                                .putInt(lidarPacket.scanTimestampNanos)
+                                .putInt(lidarPacket.fragmentSequence)
+                                .put(lidarPacket.data)
+                                .array()
+                            BitchatPacket(
+                                type = com.bitchat.android.protocol.MessageType.LIDAR_FRAGMENT_CONTINUE.value,
+                                senderID = BitchatPacket.hexStringToByteArray(meshService.myPeerID),
+                                recipientID = SpecialRecipients.BROADCAST,
+                                timestamp = System.currentTimeMillis().toULong(),
+                                payload = payload,
+                                ttl = 7u
+                            )
+                        }
+                        is LidarFragmentEnd -> {
+                            val payload = ByteBuffer.allocate(8 + 4 + 4 + lidarPacket.data.size)
+                                .putLong(lidarPacket.scanTimestampSec)
+                                .putInt(lidarPacket.scanTimestampNanos)
+                                .putInt(lidarPacket.fragmentSequence)
+                                .put(lidarPacket.data)
+                                .array()
+                            BitchatPacket(
+                                type = com.bitchat.android.protocol.MessageType.LIDAR_FRAGMENT_END.value,
+                                senderID = BitchatPacket.hexStringToByteArray(meshService.myPeerID),
+                                recipientID = SpecialRecipients.BROADCAST,
+                                timestamp = System.currentTimeMillis().toULong(),
+                                payload = payload,
+                                ttl = 7u
+                            )
+                        }
+                    }
+                    meshService.sendPacket(bitchatPacket)
+                    delay(50) // Small delay to avoid overwhelming the network
+                }
+            }
+        }
     }
 }

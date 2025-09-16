@@ -10,38 +10,38 @@ import kotlinx.coroutines.channels.actor
 
 /**
  * Processes incoming packets and routes them to appropriate handlers
- * 
+ *
  * Per-peer packet serialization using Kotlin coroutine actors
  * Prevents race condition where multiple threads process packets
  * from the same peer simultaneously, causing session management conflicts.
  */
 class PacketProcessor(private val myPeerID: String) {
     private val debugManager by lazy { try { com.bitchat.android.ui.debug.DebugSettingsManager.getInstance() } catch (e: Exception) { null } }
-    
+
     companion object {
         private const val TAG = "PacketProcessor"
     }
-    
+
     // Delegate for callbacks
     var delegate: PacketProcessorDelegate? = null
-    
+
     // Helper function to format peer ID with nickname for logging
     private fun formatPeerForLog(peerID: String): String {
         val nickname = delegate?.getPeerNickname(peerID)
         return if (nickname != null) "$peerID ($nickname)" else peerID
     }
-    
+
     // Packet relay manager for centralized relay decisions
     private val packetRelayManager = PacketRelayManager(myPeerID)
-    
+
     // Coroutines
     private val processorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     // Per-peer actors to serialize packet processing
     // Each peer gets its own actor that processes packets sequentially
     // This prevents race conditions in session management
     private val peerActors = mutableMapOf<String, CompletableDeferred<Unit>>()
-    
+
     @OptIn(ObsoleteCoroutinesApi::class)
     private fun getOrCreateActorForPeer(peerID: String) = processorScope.actor<RoutedPacket>(
         capacity = Channel.UNLIMITED
@@ -57,15 +57,15 @@ class PacketProcessor(private val myPeerID: String) {
             Log.d(TAG, "🎭 Packet actor for ${formatPeerForLog(peerID)} terminated")
         }
     }
-    
+
     // Cache actors to reuse them
     private val actors = mutableMapOf<String, kotlinx.coroutines.channels.SendChannel<RoutedPacket>>()
-    
+
     init {
         // Set up the packet relay manager delegate immediately
         setupRelayManager()
     }
-    
+
     /**
      * Process received packet - main entry point for all incoming packets
      * SURGICAL FIX: Route to per-peer actor for serialized processing
@@ -80,10 +80,10 @@ class PacketProcessor(private val myPeerID: String) {
         }
 
 
-        
+
         // Get or create actor for this peer
         val actor = actors.getOrPut(peerID) { getOrCreateActorForPeer(peerID) }
-        
+
         // Send packet to peer's dedicated actor for serialized processing
         processorScope.launch {
             try {
@@ -95,7 +95,7 @@ class PacketProcessor(private val myPeerID: String) {
             }
         }
     }
-    
+
     /**
      * Set up the packet relay manager with its delegate
      */
@@ -104,17 +104,17 @@ class PacketProcessor(private val myPeerID: String) {
             override fun getNetworkSize(): Int {
                 return delegate?.getNetworkSize() ?: 1
             }
-            
+
             override fun getBroadcastRecipient(): ByteArray {
                 return delegate?.getBroadcastRecipient() ?: ByteArray(0)
             }
-            
+
             override fun broadcastPacket(routed: RoutedPacket) {
                 delegate?.relayPacket(routed)
             }
         }
     }
-    
+
     /**
      * Handle received packet - core protocol logic (exact same as iOS)
      */
@@ -138,8 +138,8 @@ class PacketProcessor(private val myPeerID: String) {
             val nick = delegate?.getPeerNickname(peerID)
             debugManager?.logIncomingPacket(peerID, nick, mt, routeDevice)
         } catch (_: Exception) { }
-        
-        
+
+
         // Handle public packet types (no address check needed)
         when (messageType) {
             MessageType.ANNOUNCE -> handleAnnounce(routed)
@@ -147,6 +147,7 @@ class PacketProcessor(private val myPeerID: String) {
             MessageType.LEAVE -> handleLeave(routed)
             MessageType.FRAGMENT -> handleFragment(routed)
             MessageType.REQUEST_SYNC -> handleRequestSync(routed)
+            MessageType.LIDAR_FRAGMENT_START, MessageType.LIDAR_FRAGMENT_CONTINUE, MessageType.LIDAR_FRAGMENT_END -> handleLidarPacket(routed)
             else -> {
                 // Handle private packet types (address check required)
                 if (packetRelayManager.isPacketAddressedToMe(packet)) {
@@ -163,16 +164,16 @@ class PacketProcessor(private val myPeerID: String) {
                 }
             }
         }
-        
+
         // Update last seen timestamp
         if (validPacket) {
             delegate?.updatePeerLastSeen(peerID)
-            
+
             // CENTRALIZED RELAY LOGIC: Handle relay decisions for all packets not addressed to us
             packetRelayManager.handlePacketRelay(routed)
         }
     }
-    
+
     /**
      * Handle Noise handshake message - SIMPLIFIED iOS-compatible version
      */
@@ -181,7 +182,7 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing Noise handshake from ${formatPeerForLog(peerID)}")
         delegate?.handleNoiseHandshake(routed)
     }
-    
+
     /**
      * Handle Noise encrypted transport message
      */
@@ -190,7 +191,7 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing Noise encrypted message from ${formatPeerForLog(peerID)}")
         delegate?.handleNoiseEncrypted(routed)
     }
-    
+
     /**
      * Handle announce message
      */
@@ -199,7 +200,7 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing announce from ${formatPeerForLog(peerID)}")
         delegate?.handleAnnounce(routed)
     }
-    
+
     /**
      * Handle regular message
      */
@@ -208,7 +209,7 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing message from ${formatPeerForLog(peerID)}")
         delegate?.handleMessage(routed)
     }
-    
+
     /**
      * Handle leave message
      */
@@ -217,20 +218,20 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing leave from ${formatPeerForLog(peerID)}")
         delegate?.handleLeave(routed)
     }
-    
+
     /**
      * Handle message fragments
      */
     private suspend fun handleFragment(routed: RoutedPacket) {
         val peerID = routed.peerID ?: "unknown"
         Log.d(TAG, "Processing fragment from ${formatPeerForLog(peerID)}")
-        
+
         val reassembledPacket = delegate?.handleFragment(routed.packet)
         if (reassembledPacket != null) {
             Log.d(TAG, "Fragment reassembled, processing complete message")
             handleReceivedPacket(RoutedPacket(reassembledPacket, routed.peerID, routed.relayAddress))
         }
-        
+
         // Fragment relay is now handled by centralized PacketRelayManager
     }
 
@@ -242,16 +243,13 @@ class PacketProcessor(private val myPeerID: String) {
         Log.d(TAG, "Processing REQUEST_SYNC from ${formatPeerForLog(peerID)}")
         delegate?.handleRequestSync(routed)
     }
-    
-    /**
-     * Handle delivery acknowledgment
-     */
-//    private suspend fun handleDeliveryAck(routed: RoutedPacket) {
-//        val peerID = routed.peerID ?: "unknown"
-//        Log.d(TAG, "Processing delivery ACK from ${formatPeerForLog(peerID)}")
-//        delegate?.handleDeliveryAck(routed)
-//    }
-    
+
+    private suspend fun handleLidarPacket(routed: RoutedPacket) {
+        val peerID = routed.peerID ?: "unknown"
+        Log.d(TAG, "Processing LIDAR packet from ${formatPeerForLog(peerID)}")
+        delegate?.handleLidarPacket(routed)
+    }
+
     /**
      * Get debug information
      */
@@ -261,7 +259,7 @@ class PacketProcessor(private val myPeerID: String) {
             appendLine("Processor Scope Active: ${processorScope.isActive}")
             appendLine("Active Peer Actors: ${actors.size}")
             appendLine("My Peer ID: $myPeerID")
-            
+
             if (actors.isNotEmpty()) {
                 appendLine("Peer Actors:")
                 actors.keys.forEach { peerID ->
@@ -270,25 +268,25 @@ class PacketProcessor(private val myPeerID: String) {
             }
         }
     }
-    
+
     /**
      * Shutdown the processor and all peer actors
      */
     fun shutdown() {
         Log.d(TAG, "Shutting down PacketProcessor and ${actors.size} peer actors")
-        
+
         // Close all peer actors gracefully
         actors.values.forEach { actor ->
             actor.close()
         }
         actors.clear()
-        
+
         // Shutdown the relay manager
         packetRelayManager.shutdown()
-        
+
         // Cancel the main scope
         processorScope.cancel()
-        
+
         Log.d(TAG, "PacketProcessor shutdown complete")
     }
 }
@@ -299,15 +297,15 @@ class PacketProcessor(private val myPeerID: String) {
 interface PacketProcessorDelegate {
     // Security validation
     fun validatePacketSecurity(packet: BitchatPacket, peerID: String): Boolean
-    
+
     // Peer management
     fun updatePeerLastSeen(peerID: String)
     fun getPeerNickname(peerID: String): String?
-    
+
     // Network information
     fun getNetworkSize(): Int
     fun getBroadcastRecipient(): ByteArray
-    
+
     // Message type handlers
     fun handleNoiseHandshake(routed: RoutedPacket): Boolean
     fun handleNoiseEncrypted(routed: RoutedPacket)
@@ -316,7 +314,8 @@ interface PacketProcessorDelegate {
     fun handleLeave(routed: RoutedPacket)
     fun handleFragment(packet: BitchatPacket): BitchatPacket?
     fun handleRequestSync(routed: RoutedPacket)
-    
+    fun handleLidarPacket(routed: RoutedPacket)
+
     // Communication
     fun sendAnnouncementToPeer(peerID: String)
     fun sendCachedMessages(peerID: String)

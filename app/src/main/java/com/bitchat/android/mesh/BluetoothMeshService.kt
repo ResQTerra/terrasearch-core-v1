@@ -366,6 +366,10 @@ class BluetoothMeshService(private val context: Context) {
             override fun onReadReceiptReceived(messageID: String, peerID: String) {
                 delegate?.didReceiveReadReceipt(messageID, peerID)
             }
+
+            override fun onLidarScanReceived(scan: com.bitchat.android.model.LidarScan) {
+                delegate?.onLidarScanReceived(scan)
+            }
         }
         
         // PacketProcessor delegates
@@ -472,6 +476,10 @@ class BluetoothMeshService(private val context: Context) {
                 val fromPeer = routed.peerID ?: return
                 val req = RequestSyncPacket.decode(routed.packet.payload) ?: return
                 gossipSyncManager.handleRequestSync(fromPeer, req)
+            }
+
+            override fun handleLidarPacket(routed: RoutedPacket) {
+                serviceScope.launch { messageHandler.handleLidarPacket(routed) }
             }
         }
         
@@ -1060,6 +1068,13 @@ class BluetoothMeshService(private val context: Context) {
             Log.e(TAG, "❌ Error clearing encryption data: ${e.message}")
         }
     }
+
+    fun sendPacket(packet: BitchatPacket) {
+        serviceScope.launch {
+            val signedPacket = signPacketBeforeBroadcast(packet)
+            connectionManager.broadcastPacket(RoutedPacket(signedPacket))
+        }
+    }
 }
 
 /**
@@ -1074,5 +1089,6 @@ interface BluetoothMeshDelegate {
     fun decryptChannelMessage(encryptedContent: ByteArray, channel: String): String?
     fun getNickname(): String?
     fun isFavorite(peerID: String): Boolean
+    fun onLidarScanReceived(scan: com.bitchat.android.model.LidarScan)
     // registerPeerPublicKey REMOVED - fingerprints now handled centrally in PeerManager
 }
